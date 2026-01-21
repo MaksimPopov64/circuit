@@ -71,6 +71,24 @@ const App = () => {
         return POWER_COLORS[powerCount % POWER_COLORS.length];
     }, [nodes]);
 
+        // Обработка сообщений от Electron
+    useEffect(() => {
+        if (window.electronAPI) {
+            window.electronAPI.onNewCircuit(() => {
+                clearAll();
+            });
+            
+            window.electronAPI.onClearAll(() => {
+                clearAll();
+            });
+            
+            window.electronAPI.onSetMode((event, mode: any) => {
+                setMode(mode);
+            });           
+          
+        }
+    }, []);
+
     // Функция для поиска всех источников в цепи узла
     const findSourcesForNode = useCallback((nodeId: string, visited: Set<string> = new Set()): Set<string> => {
         if (visited.has(nodeId)) return new Set();
@@ -103,7 +121,7 @@ const App = () => {
             const fromSources = findSourcesForNode(conn.to, visited);
             fromSources.forEach(source => sources.add(source));
         }
-        
+
         return sources;
     }, [nodes, connections]);
 
@@ -207,7 +225,7 @@ const App = () => {
 
         // Для шины находим все активные источники
         const sources = findSourcesForNode(nodeId);
-     
+
         if (sources.size === 0) {
             return '#808080'; // Нет активных источников
         }
@@ -454,88 +472,92 @@ const App = () => {
             minHeight: '100vh',
             fontFamily: 'Arial, sans-serif'
         }}>
-            <h1 style={{ color: 'white', marginBottom: '20px' }}>⚡ Редактор электрических схем</h1>
+            <h1 style={{ color: 'white', marginBottom: '20px' }}>⚡ Схема электросети</h1>
 
             <div style={{
                 display: 'flex',
+                flexDirection: 'column',               
                 gap: '10px',
                 marginBottom: '20px',
                 flexWrap: 'wrap',
                 alignItems: 'center'
             }}>
-                <div style={{ color: 'white', fontWeight: 'bold', marginRight: '10px' }}>
+                <div style={{ color: 'white', fontWeight: 'bold', marginRight: '10px',  justifyContent: 'flex-start', }}>
                     Режим:
                     {mode === 'select' && ' Выбор'}
                     {mode === 'add-power' && ' Добавление источника'}
                     {mode === 'add-bus' && ' Добавление шины'}
                     {mode === 'add-connection' && ' Рисование соединения'}
                 </div>
-                <button
-                    onClick={() => setMode('select')}
-                    style={{
-                        padding: '10px 15px',
-                        backgroundColor: mode === 'select' ? '#4CAF50' : '#333',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer'
-                    }}
-                >
-                    ✨ Выбор
-                </button>
-                <button
-                    onClick={() => setMode('add-power')}
-                    style={{
-                        padding: '10px 15px',
-                        backgroundColor: mode === 'add-power' ? '#4CAF50' : '#333',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer'
-                    }}
-                >
-                    🔋 Добавить источник
-                </button>
-                <button
-                    onClick={() => setMode('add-bus')}
-                    style={{
-                        padding: '10px 15px',
-                        backgroundColor: mode === 'add-bus' ? '#4CAF50' : '#333',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer'
-                    }}
-                >
-                    🔌 Добавить шину
-                </button>
-                <button
-                    onClick={() => setMode('add-connection')}
-                    style={{
-                        padding: '10px 15px',
-                        backgroundColor: mode === 'add-connection' ? '#4CAF50' : '#333',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer'
-                    }}
-                >
-                    🔗 Нарисовать соединение
-                </button>
-                <button
-                    onClick={clearAll}
-                    style={{
-                        padding: '10px 15px',
-                        backgroundColor: '#f44336',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '4px',
-                        cursor: 'pointer'
-                    }}
-                >
-                    🗑️ Очистить всё
-                </button>
+                <article style={{ justifyContent: 'flex-start', display: 'flex', width: '100%', gap: '8px'}}>
+                    <button
+                        onClick={() => setMode('select')}
+                        style={{
+                            padding: '10px 15px',
+                            backgroundColor: mode === 'select' ? '#4CAF50' : '#333',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        ✨ Выбор
+                    </button>
+                    <button
+                        onClick={() => setMode('add-power')}
+                        style={{
+                            padding: '10px 15px',
+                            backgroundColor: mode === 'add-power' ? '#4CAF50' : '#333',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        🔋 Добавить источник
+                    </button>
+                    <button
+                        onClick={() => setMode('add-bus')}
+                        style={{
+                            padding: '10px 15px',
+                            backgroundColor: mode === 'add-bus' ? '#4CAF50' : '#333',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        🔌 Добавить шину
+                    </button>
+                    <button
+                        onClick={() => setMode('add-connection')}
+                        style={{
+                            padding: '10px 15px',
+                            backgroundColor: mode === 'add-connection' ? '#4CAF50' : '#333',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        🔗 Нарисовать соединение
+                    </button>
+                    <button
+                        onClick={clearAll}
+                        style={{
+                            padding: '10px 15px',
+                            backgroundColor: '#f44336',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        🗑️ Очистить всё
+                    </button>
+                </article>
             </div>
+
 
             {/* Статистика */}
             <div style={{
@@ -599,8 +621,8 @@ const App = () => {
 
             <div style={{ position: 'relative' }}>
                 <svg
-                    width="800"
-                    height="500"
+                    width="100%"
+                    height="1000"
                     style={{
                         backgroundColor: '#2a2a2a',
                         borderRadius: '8px',
