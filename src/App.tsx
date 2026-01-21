@@ -125,16 +125,6 @@ const App = () => {
         return sources;
     }, [nodes, connections]);
 
-    // Функция для проверки конфликта на шине
-    const checkBusConflict = useCallback((busId: string): boolean => {
-        const bus = nodes.find(n => n.id === busId);
-        if (!bus || bus.type !== 'bus' || !bus.enabled) return false;
-
-        // Находим все источники, которые питают эту шину
-        const sources = findSourcesForNode(busId);
-        return sources.size > 1;
-    }, [nodes, connections, findSourcesForNode]);
-
     // Автоматическое выключение шин при конфликте
     useEffect(() => {
         const conflicts = new Map<string, Set<string>>();
@@ -417,23 +407,7 @@ const App = () => {
             ));
         }
     };
-
-    const deleteConnection = (connectionId: string) => {
-        setConnections(prev => prev.filter(c => c.id !== connectionId));
-    };
-
-    const deleteNode = (nodeId: string) => {
-        setNodes(prev => prev.filter(n => n.id !== nodeId));
-        setConnections(prev => prev.filter(c => c.from !== nodeId && c.to !== nodeId));
-    };
-
-    const changePowerColor = (nodeId: string, color: string) => {
-        setNodes(prev => prev.map(node =>
-            node.id === nodeId && node.type === 'power'
-                ? { ...node, color }
-                : node
-        ));
-    };
+   
 
     const clearAll = () => {
         if (window.confirm('Очистить всю схему?')) {
