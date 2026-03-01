@@ -1,47 +1,34 @@
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
-
-interface Node {
-    id: string;
-    type: 'power' | 'bus';
-    x: number;
-    y: number;
-    enabled: boolean;
-    color?: string;
-}
-
-interface Connection {
-    id: string;
-    from: string;
-    to: string;
-}
-
-// Палитра цветов для источников (кроме красного)
-const POWER_COLORS = [
-    '#00FF00', // Зеленый
-    '#0000FF', // Синий
-    '#FFFF00', // Желтый
-    '#FF00FF', // Пурпурный
-    '#00FFFF', // Бирюзовый
-    '#FF8800', // Оранжевый
-    '#8800FF', // Фиолетовый
-    '#008800', // Темно-зеленый
-    '#0088FF', // Голубой
-    '#FF00AA', // Розовый
-];
-
-let nextNodeId = 10;
-let nextConnectionId = 7;
-
-const generateNodeId = (type: 'power' | 'bus') => {
-    return `${type === 'power' ? 'P' : 'B'}${nextNodeId++}`;
-};
-
-const generateConnectionId = () => {
-    return `C${nextConnectionId++}`;
-};
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { Mode, Node, Wire, WirePoint, DraggingNodeState, EditingPointState, HoveredElement, PreviewPoint } from './types';
+import {
+  useIdGenerator,
+  useConnectionGraph,
+  useCircuitTracer,
+  useColorManager,
+  usePositionFinder,
+  useConflictDetection
+} from './hooks';
+import { getSVGCoordinates } from './utils';
+import { calculateDistance } from './utils/grid';
+import {
+  POWER_COLORS,
+  NODE_CLICK_RADIUS,
+  NODE_HOVER_RADIUS,
+  NODE_SNAP_RADIUS,
+  WIRE_STROKE_WIDTH,
+  WIRE_STROKE_WIDTH_HOVER,
+  WIRE_GLOW_WIDTH,
+  COLOR_BEND_POINT,
+  COLOR_JUNCTION_POINT,
+  PREVIEW_LINE_DASH,
+  PREVIEW_LINE_OPACITY,
+  SVG_HEIGHT,
+  COLOR_BACKGROUND
+} from './constants';
 
 const App = () => {
-    const [mode, setMode] = useState<'select' | 'add-power' | 'add-bus' | 'add-connection'>('select');
+    // State management
+    const [mode, setMode] = useState<Mode>('select');
     const [nodes, setNodes] = useState<Node[]>([
         { id: 'P1', type: 'power', x: 50, y: 100, enabled: true, color: POWER_COLORS[0] },
         { id: 'B1', type: 'bus', x: 150, y: 100, enabled: true },
@@ -51,393 +38,530 @@ const App = () => {
         { id: 'B4', type: 'bus', x: 150, y: 200, enabled: true },
         { id: 'B5', type: 'bus', x: 250, y: 200, enabled: true },
     ]);
-    const [connections, setConnections] = useState<Connection[]>([
-        { id: 'C1', from: 'P1', to: 'B1' },
-        { id: 'C2', from: 'B1', to: 'B2' },
-        { id: 'C3', from: 'B2', to: 'B3' },
-        { id: 'C4', from: 'P2', to: 'B4' },
-        { id: 'C5', from: 'B4', to: 'B5' },
-    ]);
-    const [drawingConnection, setDrawingConnection] = useState<{
-        from: string;
-        currentX: number;
-        currentY: number;
-    } | null>(null);
-    const [draggingNode, setDraggingNode] = useState<string | null>(null);
-    const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+    const [wires, setWires] = useState<Wire[]>([]);
+    const [activeWire, setActiveWire] = useState<Wire | null>(null);
+    const [currentBranchEndId, setCurrentBranchEndId] = useState<string | null>(null);
+    const [hoveredElement, setHoveredElement] = useState<HoveredElement | null>(null);
+    const [editingPoint, setEditingPoint] = useState<EditingPointState | null>(null);
+    const [draggingNode, setDraggingNode] = useState<DraggingNodeState | null>(null);
+    const [previewPoint, setPreviewPoint] = useState<PreviewPoint | null>(null);
 
-    const getNextPowerColor = useCallback(() => {
-        const powerCount = nodes.filter(n => n.type === 'power').length;
-        return POWER_COLORS[powerCount % POWER_COLORS.length];
-    }, [nodes]);
+    const svgRef = useRef<SVGSVGElement>(null);
 
-        // Обработка сообщений от Electron
-    useEffect(() => {
-        if (window.electronAPI) {
-            window.electronAPI.onNewCircuit(() => {
-                clearAll();
-            });
-            
-            window.electronAPI.onClearAll(() => {
-                clearAll();
-            });
-            
-            window.electronAPI.onSetMode((event, mode: any) => {
-                setMode(mode);
-            });           
-          
-        }
-    }, []);
+    // Custom hooks for ID generation and circuit logic
+    const { generateNodeId, generateWireId, generatePointId, resetCounters } = useIdGenerator();
+    const connectionGraph = useConnectionGraph(nodes, wires);
+    const circuits = useCircuitTracer(nodes, wires, connectionGraph);
+    const { getNextPowerColor, getNodeColor, getSegmentColor } = useColorManager(nodes, circuits);
+    const { findNodeAtPosition, findWirePointAtPosition } = usePositionFinder(nodes, wires);
 
-    // Функция для поиска всех источников в цепи узла
-    const findSourcesForNode = useCallback((nodeId: string, visited: Set<string> = new Set()): Set<string> => {
-        if (visited.has(nodeId)) return new Set();
-        visited.add(nodeId);
-
-        const node = nodes.find(n => n.id === nodeId);
-        if (!node) return new Set();
-
-        // Если это выключенная шина - прерываем поиск в этом направлении
-        if (node.type === 'bus' && !node.enabled) {
-            return new Set();
-        }
-
-        const sources = new Set<string>();
-
-        // Если это включенный источник
-        if (node.type === 'power' && node.enabled) {
-            sources.add(nodeId);
-            return sources;
-        }
-
-        // Ищем источники среди узлов, которые соединены с текущим (в обратном направлении)
-        const incomingConnections = connections.filter(c => c.to === nodeId);
-        const outgoingConnections = connections.filter(c => c.from === nodeId);
-        for (const conn of incomingConnections) {
-            const fromSources = findSourcesForNode(conn.from, visited);
-            fromSources.forEach(source => sources.add(source));
-        }
-        for (const conn of outgoingConnections) {
-            const fromSources = findSourcesForNode(conn.to, visited);
-            fromSources.forEach(source => sources.add(source));
-        }
-
-        return sources;
-    }, [nodes, connections]);
-
-    // Автоматическое выключение шин при конфликте
-    useEffect(() => {
-        const conflicts = new Map<string, Set<string>>();
-        const nodesToDisable = new Set<string>();
-
-        // Находим все шины с конфликтом
-        nodes.forEach(node => {
-            if (node.type === 'bus' && node.enabled) {
-                const sources = findSourcesForNode(node.id);
-                if (sources.size > 1) {
-                    conflicts.set(node.id, sources);
-                    nodesToDisable.add(node.id);
-                }
+    // Conflict detection with auto-update
+    const { conflictBuses } = useConflictDetection(
+        nodes,
+        circuits,
+        useCallback((conflicts) => {
+            if (conflicts.size > 0) {
+                setNodes(prev => prev.map(node =>
+                    conflicts.has(node.id) ? { ...node, enabled: false } : node
+                ));
             }
-        });
+        }, [])
+    );
 
-        // Если есть конфликты, отключаем шины
-        if (nodesToDisable.size > 0) {
-            setNodes(prev => prev.map(node =>
-                nodesToDisable.has(node.id)
-                    ? { ...node, enabled: false }
-                    : node
-            ));
-        }
-    }, [nodes, connections, findSourcesForNode]);
-
-    // Функция для проверки, можно ли включить шину
+    // Check if a bus can be toggled without creating conflicts
     const canToggleBus = useCallback((busId: string): boolean => {
         const bus = nodes.find(n => n.id === busId);
         if (!bus || bus.type !== 'bus') return true;
-
-        // Если шина уже включена, ее можно выключить в любой момент
         if (bus.enabled) return true;
 
-        // Находим все источники, которые будут питать эту шину после включения
-        const tempBus = { ...bus, enabled: true };
-        const tempNodes = nodes.map(n => n.id === busId ? tempBus : n);
-
-        // Функция для поиска источников с учетом выключенных шин
-        const findSourcesTemp = (nodeId: string, visited: Set<string> = new Set()): Set<string> => {
-            if (visited.has(nodeId)) return new Set();
-            visited.add(nodeId);
-
-            const node = tempNodes.find(n => n.id === nodeId);
-            if (!node) return new Set();
-
-            // Если это выключенная шина - прерываем поиск в этом направлении
-            if (node.type === 'bus' && !node.enabled) {
-                return new Set();
-            }
-
-            const sources = new Set<string>();
-
-            // Если это включенный источник - добавляем его
-            if (node.type === 'power' && node.enabled) {
-                sources.add(nodeId);
-                return sources;
-            }
-
-            // Ищем источники среди входящих соединений
-            const incomingConnections = connections.filter(c => c.to === nodeId);
-            for (const conn of incomingConnections) {
-                const fromSources = findSourcesTemp(conn.from, visited);
-                fromSources.forEach(source => sources.add(source));
-            }
-
-            return sources;
-        };
-
-        const sources = findSourcesTemp(busId);
-        return sources.size <= 1; // Можно включить только если будет не более одного источника
-    }, [nodes, connections]);
-
-    // Функция для получения цвета узла
-    const getNodeColor = useCallback((nodeId: string): string => {
-        const node = nodes.find(n => n.id === nodeId);
-        if (!node) return '#808080';
-
-        // Выключенные узлы
-        if (!node.enabled) {
-            return node.type === 'power' ? '#808080' : '#ff0000'; // Красный для выключенных шин
-        }
-
-        // Включенные источники показывают свой цвет
-        if (node.type === 'power') {
-            return node.color || '#808080';
-        }
-
-        // Для шины находим все активные источники
-        const sources = findSourcesForNode(nodeId);
-
-        if (sources.size === 0) {
-            return '#808080'; // Нет активных источников
-        }
-
-        if (sources.size === 1) {
-            const sourceId = Array.from(sources)[0];
-            const source = nodes.find(n => n.id === sourceId);
-            return source?.color || '#808080';
-        }
-
-        // Если несколько источников (конфликт) - шина будет выключена автоматически
-        return '#808080';
-    }, [nodes, findSourcesForNode]);
-
-    // Функция для получения цвета линии
-    const getLineColor = useCallback((fromId: string, toId: string): string => {
-        const fromNode = nodes.find(n => n.id === fromId);
-        const toNode = nodes.find(n => n.id === toId);
-
-        if (!fromNode || !toNode) return '#808080';
-
-        // Находим все источники для каждого конца линии
-        const fromSources = findSourcesForNode(fromId);
-        const toSources = findSourcesForNode(toId);
-
-        // Если оба узла активны (имеют источники)
-        if (fromSources.size > 0 && toSources.size > 0) {
-            // Если источники разные - конфликт, выбираем цвет ближайшего источника к начальному узлу
-            const fromSourceId = Array.from(fromSources)[0];
-            const toSourceId = Array.from(toSources)[0];
-
-            if (fromSourceId === toSourceId) {
-                // Один источник на обоих концах
-                const source = nodes.find(n => n.id === fromSourceId);
-                return source?.color || '#808080';
-            } else {
-                // Разные источники - серая линия (конфликт)
-                return '#808080';
+        // Check if enabling this bus would create a conflict
+        for (const circuit of circuits) {
+            if (circuit.busIds.has(busId) && circuit.hasConflict) {
+                return false; // Would create/extend a conflict
             }
         }
-
-        // Если один из узлов активен
-        if (fromSources.size > 0) {
-            const sourceId = Array.from(fromSources)[0];
-            const source = nodes.find(n => n.id === sourceId);
-            return source?.color || '#808080';
-        }
-
-        if (toSources.size > 0) {
-            const sourceId = Array.from(toSources)[0];
-            const source = nodes.find(n => n.id === sourceId);
-            return source?.color || '#808080';
-        }
-
-        // Оба узла неактивны
-        return '#808080';
-    }, [nodes, findSourcesForNode]);
-
-    // Функция для проверки, активна ли линия (не серая)
-    const isLineActive = useCallback((fromId: string, toId: string): boolean => {
-        const color = getLineColor(fromId, toId);
-        return color !== '#808080';
-    }, [getLineColor]);
+        return true;
+    }, [nodes, circuits]);
 
     const handleCanvasClick = (e: React.MouseEvent<SVGSVGElement>) => {
-        const svg = e.currentTarget;
-        const point = svg.createSVGPoint();
-        point.x = e.clientX;
-        point.y = e.clientY;
-        const svgPoint = point.matrixTransform(svg.getScreenCTM()?.inverse());
+        if (editingPoint || draggingNode) return;
 
-        const x = Math.round(svgPoint.x);
-        const y = Math.round(svgPoint.y);
+        const svg = svgRef.current;
+        if (!svg) return;
 
-        if (mode === 'add-power') {
-            const newId = generateNodeId('power');
-            const nextColor = getNextPowerColor();
-            setNodes(prev => [...prev, {
-                id: newId,
-                type: 'power',
-                x,
-                y,
-                enabled: true,
-                color: nextColor
-            }]);
-            setMode('select');
-        } else if (mode === 'add-bus') {
-            const newId = generateNodeId('bus');
-            setNodes(prev => [...prev, {
-                id: newId,
-                type: 'bus',
-                x,
-                y,
-                enabled: true
-            }]);
-            setMode('select');
-        } else if (mode === 'add-connection') {
-            const clickedNode = nodes.find(node => {
-                const dx = x - node.x;
-                const dy = y - node.y;
-                return Math.sqrt(dx * dx + dy * dy) <= 20;
-            });
+        try {
+            const { x, y } = getSVGCoordinates(svg, e.clientX, e.clientY);
 
-            if (clickedNode) {
-                if (!drawingConnection) {
-                    setDrawingConnection({
-                        from: clickedNode.id,
-                        currentX: x,
-                        currentY: y
-                    });
+            if (mode === 'add-power' || mode === 'add-bus') {
+                const isPower = mode === 'add-power';
+                const newId = generateNodeId(isPower ? 'power' : 'bus');
+                const nextColor = isPower ? getNextPowerColor() : undefined;
+
+                // If user clicks on an existing wire point we snap the new node to it
+                // and update the point's connectedTo so the wire attaches automatically.
+                let placeX = x;
+                let placeY = y;
+                const existingPoint = findWirePointAtPosition(x, y);
+                if (existingPoint) {
+                    placeX = existingPoint.point.x;
+                    placeY = existingPoint.point.y;
+                }
+
+                setNodes(prev => [...prev, {
+                    id: newId,
+                    type: isPower ? 'power' : 'bus',
+                    x: placeX,
+                    y: placeY,
+                    enabled: true,
+                    ...(nextColor ? { color: nextColor } : {})
+                }]);
+
+                if (existingPoint) {
+                    // update the wire point to reference the new node
+                    setWires(prev => prev.map(wire => {
+                        if (wire.id === existingPoint.wire.id) {
+                            const updatedPoints = { ...wire.points };
+                            const p = updatedPoints[existingPoint.pointId];
+                            if (p) {
+                                updatedPoints[existingPoint.pointId] = {
+                                    ...p,
+                                    connectedTo: newId,
+                                    x: placeX,
+                                    y: placeY
+                                };
+                            }
+                            return { ...wire, points: updatedPoints };
+                        }
+                        return wire;
+                    }));
+                }
+
+                setMode('select');
+                return;
+            }
+
+            if (mode === 'select') {
+                const node = findNodeAtPosition(x, y, NODE_CLICK_RADIUS);
+                if (node) {
+                    if (node.type === 'bus' && !node.enabled) {
+                        if (!canToggleBus(node.id)) {
+                            alert('Невозможно включить шину: обнаружен конфликт источников!');
+                            return;
+                        }
+                    }
+                    setNodes(prev => prev.map(n =>
+                        n.id === node.id ? { ...n, enabled: !n.enabled } : n
+                    ));
+                }
+                return;
+            }
+
+            if (mode === 'draw-wire') {
+                const node = findNodeAtPosition(x, y, 22);
+                const existingPoint = findWirePointAtPosition(x, y);
+
+                let targetPoint: WirePoint;
+
+                if (node) {
+                    targetPoint = {
+                        id: generatePointId(),
+                        x: node.x,
+                        y: node.y,
+                        type: 'end',
+                        connectedTo: node.id,
+                        outgoing: [],
+                    };
+                } else if (existingPoint) {
+                    targetPoint = existingPoint.point;
                 } else {
-                    const newId = generateConnectionId();
-                    setConnections(prev => [...prev, {
-                        id: newId,
-                        from: drawingConnection.from,
-                        to: clickedNode.id
-                    }]);
-                    setDrawingConnection(null);
-                    setMode('select');
+                    targetPoint = {
+                        id: generatePointId(),
+                        x,
+                        y,
+                        type: 'bend',
+                        outgoing: [],
+                    };
+                }
+
+                if (!activeWire) {
+                    const newWire: Wire = {
+                        id: generateWireId(),
+                        points: { [targetPoint.id]: targetPoint },
+                        rootPointId: targetPoint.id,
+                        isComplete: false,
+                    };
+                    setActiveWire(newWire);
+                    setCurrentBranchEndId(targetPoint.id);
+                    setWires(prev => [...prev, newWire]);
+                } else {
+                    const prevEndId = currentBranchEndId!;
+                    const prevPoint = activeWire.points[prevEndId];
+
+                    if (!prevPoint) return;
+
+                    const updatedPrev = {
+                        ...prevPoint,
+                        outgoing: [...prevPoint.outgoing, targetPoint.id],
+                    };
+
+                    let updatedPoints = { ...activeWire.points };
+                    updatedPoints[prevEndId] = updatedPrev;
+
+                    if (!updatedPoints[targetPoint.id]) {
+                        updatedPoints[targetPoint.id] = targetPoint;
+                    }
+
+                    const updatedWire = {
+                        ...activeWire,
+                        points: updatedPoints,
+                    };
+
+                    setActiveWire(updatedWire);
+                    setWires(prev => prev.map(w => w.id === activeWire.id ? updatedWire : w));
+
+                    if (e.detail === 2 || node) {
+                        setActiveWire(null);
+                        setCurrentBranchEndId(null);
+                        setPreviewPoint(null);
+                    } else {
+                        setCurrentBranchEndId(targetPoint.id);
+                    }
                 }
             }
+        } catch (error) {
+            console.error('[App] Error in handleCanvasClick:', error);
         }
     };
 
     const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-        const svg = e.currentTarget;
-        const point = svg.createSVGPoint();
-        point.x = e.clientX;
-        point.y = e.clientY;
-        const svgPoint = point.matrixTransform(svg.getScreenCTM()?.inverse());
+        const svg = svgRef.current;
+        if (!svg) return;
 
-        const x = Math.round(svgPoint.x);
-        const y = Math.round(svgPoint.y);
+        try {
+            const { x, y } = getSVGCoordinates(svg, e.clientX, e.clientY);
 
-        if (draggingNode) {
-            setNodes(prev => prev.map(node =>
-                node.id === draggingNode
-                    ? { ...node, x: x - dragOffset.x, y: y - dragOffset.y }
-                    : node
-            ));
-        }
+            // Обновляем preview point для активного провода
+            if (activeWire && currentBranchEndId && mode === 'draw-wire') {
+                setPreviewPoint({ x, y });
+            } else {
+                setPreviewPoint(null);
+            }
 
-        if (drawingConnection) {
-            setDrawingConnection(prev => prev ? { ...prev, currentX: x, currentY: y } : null);
+            // Перетаскивание узла
+            if (draggingNode) {
+                const newX = x - draggingNode.offsetX;
+                const newY = y - draggingNode.offsetY;
+
+                setNodes(prev => prev.map(node => {
+                    if (node.id === draggingNode.id) {
+                        return {
+                            ...node,
+                            x: newX,
+                            y: newY
+                        };
+                    }
+                    return node;
+                }));
+
+                // Обновляем точки провода, которые привязаны к этому узлу
+                // и если узел пододвинулся вплотную к не подключённой точке конца,
+                // автоматически соединяем
+                setWires(prev => prev.map(wire => {
+                    const updatedPoints = { ...wire.points };
+                    let changed = false;
+
+                    Object.values(updatedPoints).forEach(point => {
+                        if (point.connectedTo === draggingNode.id) {
+                            point.x = newX;
+                            point.y = newY;
+                            changed = true;
+                        } else if (point.type === 'end' && !point.connectedTo) {
+                            // если точка конца попала в радиус привязки к узлу, "прилипать"
+                            if (calculateDistance(point.x, point.y, newX, newY) <= NODE_SNAP_RADIUS) {
+                                point.connectedTo = draggingNode.id;
+                                point.x = newX;
+                                point.y = newY;
+                                changed = true;
+                            }
+                        }
+                    });
+
+                    return changed ? { ...wire, points: updatedPoints } : wire;
+                }));
+                return;
+            }
+
+            // Перетаскивание точки (bend/junction/end)
+            if (editingPoint) {
+                const { wireId, pointId } = editingPoint;
+                setWires(prev => prev.map(wire => {
+                    if (wire.id === wireId && wire.points[pointId]) {
+                        const updatedPoints = { ...wire.points };
+                        const point = updatedPoints[pointId];
+                        if (point) {
+                            // перемещаем
+                            updatedPoints[pointId] = {
+                                ...point,
+                                x,
+                                y
+                            };
+
+                            // для конца проверяем привязку к узлу
+                            if (point.type === 'end') {
+                                const nodeHit = findNodeAtPosition(x, y);
+                                if (nodeHit) {
+                                    updatedPoints[pointId].connectedTo = nodeHit.id;
+                                    updatedPoints[pointId].x = nodeHit.x;
+                                    updatedPoints[pointId].y = nodeHit.y;
+                                } else {
+                                    // если больше не над узлом, отсоединяем
+                                    if (updatedPoints[pointId].connectedTo) {
+                                        updatedPoints[pointId].connectedTo = undefined;
+                                    }
+                                }
+                            }
+                        }
+                        return { ...wire, points: updatedPoints };
+                    }
+                    return wire;
+                }));
+                return;
+            }
+
+            // Подсветка элементов
+            const node = findNodeAtPosition(x, y, NODE_HOVER_RADIUS);
+            if (node) {
+                setHoveredElement({ type: 'node', id: node.id });
+            } else {
+                const pointHit = findWirePointAtPosition(x, y);
+                if (pointHit) {
+                    setHoveredElement({ type: 'wire', id: pointHit.wire.id });
+                } else {
+                    setHoveredElement(null);
+                }
+            }
+        } catch (error) {
+            console.error('[App] Error in handleMouseMove:', error);
         }
     };
 
     const handleNodeMouseDown = (e: React.MouseEvent, nodeId: string) => {
         e.stopPropagation();
-        const node = nodes.find(n => n.id === nodeId);
-        if (node) {
-            setDraggingNode(nodeId);
-            const svg = e.currentTarget.closest('svg');
-            if (svg) {
-                const point = svg.createSVGPoint();
-                point.x = e.clientX;
-                point.y = e.clientY;
-                const svgPoint = point.matrixTransform(svg.getScreenCTM()?.inverse());
-                setDragOffset({
-                    x: svgPoint.x - node.x,
-                    y: svgPoint.y - node.y
-                });
-            }
+        if (mode !== 'select') return;
+
+        const svg = svgRef.current;
+        if (!svg) return;
+
+        try {
+            const { x: svgX, y: svgY } = getSVGCoordinates(svg, e.clientX, e.clientY);
+
+            const node = nodes.find(n => n.id === nodeId);
+            if (!node) return;
+
+            setDraggingNode({
+                id: nodeId,
+                offsetX: svgX - node.x,
+                offsetY: svgY - node.y
+            });
+        } catch (error) {
+            console.error('[App] Error in handleNodeMouseDown:', error);
+        }
+    };
+
+    const handlePointMouseDown = (e: React.MouseEvent, wireId: string, pointId: string) => {
+        e.stopPropagation();
+        if (mode !== 'select') return;
+
+        const wire = wires.find(w => w.id === wireId);
+        const point = wire?.points[pointId];
+        // allow dragging any point type (bend, junction, end)
+        if (point && (point.type === 'bend' || point.type === 'junction' || point.type === 'end')) {
+            setEditingPoint({ wireId, pointId });
         }
     };
 
     const handleMouseUp = () => {
         setDraggingNode(null);
+        setEditingPoint(null);
     };
 
-    const toggleNode = (nodeId: string) => {
-        if (mode === 'select') {
-            const node = nodes.find(n => n.id === nodeId);
+    const handleMouseLeave = () => {
+        handleMouseUp();
+    };
 
-            if (!node) return;
-
-            // Для шин проверяем, можно ли их включить
-            if (node.type === 'bus' && !node.enabled) {
-                if (!canToggleBus(nodeId)) {
-                    alert('Невозможно включить шину: обнаружен конфликт источников!');
-                    return;
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                if (activeWire) {
+                    setWires(prev => prev.map(w =>
+                        w.id === activeWire.id ? { ...w, isComplete: true } : w
+                    ));
+                    setActiveWire(null);
+                    setCurrentBranchEndId(null);
+                    setPreviewPoint(null);
+                    setMode('select');
+                }
+                if (editingPoint || draggingNode) {
+                    setEditingPoint(null);
+                    setDraggingNode(null);
                 }
             }
+        };
 
-            setNodes(prev => prev.map(node =>
-                node.id === nodeId
-                    ? { ...node, enabled: !node.enabled }
-                    : node
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [activeWire, editingPoint, draggingNode]);
+
+    const handleModeChange = (newMode: Mode) => {
+        if (activeWire && newMode !== 'draw-wire') {
+            setWires(prev => prev.map(w =>
+                w.id === activeWire.id ? { ...w, isComplete: true } : w
             ));
+            setActiveWire(null);
+            setCurrentBranchEndId(null);
+            setPreviewPoint(null);
         }
+        if (draggingNode || editingPoint) {
+            setDraggingNode(null);
+            setEditingPoint(null);
+        }
+        setMode(newMode);
     };
-   
 
     const clearAll = () => {
         if (window.confirm('Очистить всю схему?')) {
             setNodes([]);
-            setConnections([]);
-            nextNodeId = 1;
-            nextConnectionId = 1;
+            setWires([]);
+            setActiveWire(null);
+            setCurrentBranchEndId(null);
+            setPreviewPoint(null);
+            resetCounters();
         }
     };
 
-    // Находим все шины с конфликтом для отображения
-    const conflictBuses = useMemo(() => {
-        const conflicts = new Map<string, Set<string>>();
+    const renderWire = (wire: Wire) => {
+        const elements: React.ReactNode[] = [];
+        const drawnSegments = new Set<string>();
+        const isHovered = hoveredElement?.type === 'wire' && hoveredElement.id === wire.id;
 
-        nodes.forEach(node => {
-            if (node.type === 'bus' && node.enabled) {
-                const sources = findSourcesForNode(node.id);
-                if (sources.size > 1) {
-                    conflicts.set(node.id, sources);
+        const drawFrom = (pointId: string) => {
+            const p = wire.points[pointId];
+            if (!p) return;
+
+            p.outgoing.forEach(childId => {
+                const key = [pointId, childId].sort().join('-');
+                if (drawnSegments.has(key)) return;
+                drawnSegments.add(key);
+
+                const child = wire.points[childId];
+                if (!child) return;
+
+                const segmentColor = getSegmentColor(p, child, wires);
+
+                elements.push(
+                    <line
+                        key={`seg-${key}`}
+                        x1={p.x}
+                        y1={p.y}
+                        x2={child.x}
+                        y2={child.y}
+                        stroke={segmentColor}
+                        strokeWidth={isHovered ? WIRE_STROKE_WIDTH_HOVER : WIRE_STROKE_WIDTH}
+                        strokeLinecap="round"
+                    />
+                );
+
+                if (segmentColor !== '#808080' && segmentColor !== '#ff0000') {
+                    elements.push(
+                        <line
+                            key={`glow-${key}`}
+                            x1={p.x}
+                            y1={p.y}
+                            x2={child.x}
+                            y2={child.y}
+                            stroke={segmentColor}
+                            strokeWidth={WIRE_GLOW_WIDTH}
+                            opacity={0.3}
+                            strokeLinecap="round"
+                        />
+                    );
                 }
+
+                drawFrom(childId);
+            });
+        };
+
+        drawFrom(wire.rootPointId);
+
+        // Отрисовка точек
+        Object.values(wire.points).forEach(point => {
+            if (point.type === 'bend') {
+                elements.push(
+                    <circle
+                        key={`point-${point.id}`}
+                        cx={point.x}
+                        cy={point.y}
+                        r="5"
+                        fill={COLOR_BEND_POINT}
+                        stroke="#333"
+                        strokeWidth="2"
+                        style={{ cursor: 'move' }}
+                        onMouseDown={(e) => handlePointMouseDown(e, wire.id, point.id)}
+                    />
+                );
+            } else if (point.type === 'junction') {
+                elements.push(
+                    <circle
+                        key={`point-${point.id}`}
+                        cx={point.x}
+                        cy={point.y}
+                        r="6"
+                        fill={COLOR_JUNCTION_POINT}
+                        stroke="#333"
+                        strokeWidth="2"
+                        onMouseDown={(e) => handlePointMouseDown(e, wire.id, point.id)}
+                    />
+                );
+            } else if (point.type === 'end') {
+                const nodeColor = point.connectedTo ? getNodeColor(point.connectedTo) : '#FF6B6B';
+                elements.push(
+                    <circle
+                        key={`point-${point.id}`}
+                        cx={point.x}
+                        cy={point.y}
+                        r="6"
+                        fill={nodeColor}
+                        stroke="#333"
+                        strokeWidth="2"
+                    />
+                );
             }
         });
 
-        return conflicts;
-    }, [nodes, findSourcesForNode]);
+        return <g key={wire.id}>{elements}</g>;
+    };
 
-    // Считаем активные линии
-    const activeLines = useMemo(() => {
-        return connections.filter(conn => isLineActive(conn.from, conn.to)).length;
-    }, [connections, isLineActive]);
+    // Preview line для активного провода
+    const renderPreviewLine = () => {
+        if (!activeWire || !currentBranchEndId || !previewPoint) return null;
+
+        const currentPoint = activeWire.points[currentBranchEndId];
+        if (!currentPoint) return null;
+
+        return (
+            <line
+                x1={currentPoint.x}
+                y1={currentPoint.y}
+                x2={previewPoint.x}
+                y2={previewPoint.y}
+                stroke="#FFD700"
+                strokeWidth="2"
+                strokeDasharray={PREVIEW_LINE_DASH}
+                opacity={PREVIEW_LINE_OPACITY}
+                pointerEvents="none"
+            />
+        );
+    };
 
     return (
         <div style={{
@@ -450,22 +574,21 @@ const App = () => {
 
             <div style={{
                 display: 'flex',
-                flexDirection: 'column',               
+                flexDirection: 'column',
                 gap: '10px',
-                marginBottom: '20px',
-                flexWrap: 'wrap',
-                alignItems: 'center'
+                marginBottom: '20px'
             }}>
-                <div style={{ color: 'white', fontWeight: 'bold', marginRight: '10px',  justifyContent: 'flex-start', }}>
-                    Режим:
-                    {mode === 'select' && ' Выбор'}
-                    {mode === 'add-power' && ' Добавление источника'}
-                    {mode === 'add-bus' && ' Добавление шины'}
-                    {mode === 'add-connection' && ' Рисование соединения'}
+                <div style={{ color: 'white', fontWeight: 'bold' }}>
+                    Режим: {mode === 'select' && 'Выбор'}
+                    {mode === 'add-power' && 'Добавление источника'}
+                    {mode === 'add-bus' && 'Добавление шины'}
+                    {mode === 'draw-wire' && 'Рисование провода'}
+                    {activeWire && ' (ESC для завершения)'}
                 </div>
-                <article style={{ justifyContent: 'flex-start', display: 'flex', width: '100%', gap: '8px'}}>
+
+                <div style={{ display: 'flex', gap: '8px' }}>
                     <button
-                        onClick={() => setMode('select')}
+                        onClick={() => handleModeChange('select')}
                         style={{
                             padding: '10px 15px',
                             backgroundColor: mode === 'select' ? '#4CAF50' : '#333',
@@ -478,7 +601,7 @@ const App = () => {
                         ✨ Выбор
                     </button>
                     <button
-                        onClick={() => setMode('add-power')}
+                        onClick={() => handleModeChange('add-power')}
                         style={{
                             padding: '10px 15px',
                             backgroundColor: mode === 'add-power' ? '#4CAF50' : '#333',
@@ -491,7 +614,7 @@ const App = () => {
                         🔋 Добавить источник
                     </button>
                     <button
-                        onClick={() => setMode('add-bus')}
+                        onClick={() => handleModeChange('add-bus')}
                         style={{
                             padding: '10px 15px',
                             backgroundColor: mode === 'add-bus' ? '#4CAF50' : '#333',
@@ -504,17 +627,17 @@ const App = () => {
                         🔌 Добавить шину
                     </button>
                     <button
-                        onClick={() => setMode('add-connection')}
+                        onClick={() => handleModeChange('draw-wire')}
                         style={{
                             padding: '10px 15px',
-                            backgroundColor: mode === 'add-connection' ? '#4CAF50' : '#333',
+                            backgroundColor: mode === 'draw-wire' ? '#4CAF50' : '#333',
                             color: 'white',
                             border: 'none',
                             borderRadius: '4px',
                             cursor: 'pointer'
                         }}
                     >
-                        🔗 Нарисовать соединение
+                        🔗 Рисовать провод
                     </button>
                     <button
                         onClick={clearAll}
@@ -524,55 +647,15 @@ const App = () => {
                             color: 'white',
                             border: 'none',
                             borderRadius: '4px',
-                            cursor: 'pointer'
+                            cursor: 'pointer',
+                            marginLeft: 'auto'
                         }}
                     >
                         🗑️ Очистить всё
                     </button>
-                </article>
-            </div>
-
-
-            {/* Статистика */}
-            <div style={{
-                color: 'white',
-                marginBottom: '20px',
-                padding: '15px',
-                backgroundColor: '#2a2a2a',
-                borderRadius: '4px',
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-                gap: '10px'
-            }}>
-                <div>
-                    <div style={{ fontSize: '12px', color: '#aaa' }}>Всего узлов:</div>
-                    <div style={{ fontSize: '20px', fontWeight: 'bold' }}>{nodes.length}</div>
-                </div>
-                <div>
-                    <div style={{ fontSize: '12px', color: '#aaa' }}>Источников:</div>
-                    <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#FFD700' }}>
-                        {nodes.filter(n => n.type === 'power').length}
-                    </div>
-                </div>
-                <div>
-                    <div style={{ fontSize: '12px', color: '#aaa' }}>Шин:</div>
-                    <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#00BFFF' }}>
-                        {nodes.filter(n => n.type === 'bus').length}
-                    </div>
-                </div>
-                <div>
-                    <div style={{ fontSize: '12px', color: '#aaa' }}>Соединений:</div>
-                    <div style={{ fontSize: '20px', fontWeight: 'bold' }}>{connections.length}</div>
-                </div>
-                <div>
-                    <div style={{ fontSize: '12px', color: '#aaa' }}>Активных линий:</div>
-                    <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#4CAF50' }}>
-                        {activeLines}
-                    </div>
                 </div>
             </div>
 
-            {/* Информация о конфликтах */}
             {conflictBuses.size > 0 && (
                 <div style={{
                     marginBottom: '20px',
@@ -582,11 +665,11 @@ const App = () => {
                     borderRadius: '8px'
                 }}>
                     <h3 style={{ marginTop: 0 }}>⚠️ Обнаружены конфликты источников!</h3>
-                    <p>Следующие шины имеют несколько активных источников и будут автоматически выключены:</p>
-                    <ul>
+                    <p>Следующие шины автоматически выключены из-за конфликта:</p>
+                    <ul style={{ margin: 0 }}>
                         {Array.from(conflictBuses.entries()).map(([busId, sources]) => (
                             <li key={busId}>
-                                <strong>{busId}</strong>: получает питание от {Array.from(sources).join(', ')}
+                                <strong>{busId}</strong>: конфликт между {Array.from(sources).join(', ')}
                             </li>
                         ))}
                     </ul>
@@ -595,129 +678,116 @@ const App = () => {
 
             <div style={{ position: 'relative' }}>
                 <svg
+                    ref={svgRef}
                     width="100%"
-                    height="60vh"
+                    height={SVG_HEIGHT}
                     style={{
-                        backgroundColor: '#2a2a2a',
+                        backgroundColor: COLOR_BACKGROUND,
                         borderRadius: '8px',
-                        cursor: mode === 'add-connection' ? 'crosshair' : 'default'
+                        cursor: editingPoint || draggingNode ? 'grabbing' :
+                            (mode === 'draw-wire' ? 'crosshair' :
+                                (mode === 'add-power' || mode === 'add-bus' ? 'copy' : 'default'))
                     }}
                     onClick={handleCanvasClick}
                     onMouseMove={handleMouseMove}
                     onMouseUp={handleMouseUp}
-                    onMouseLeave={handleMouseUp}
+                    onMouseLeave={handleMouseLeave}
                 >
                     <defs>
                         <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse">
                             <path d="M 50 0 L 0 0 0 50" fill="none" stroke="#3a3a3a" strokeWidth="1" />
                         </pattern>
+                        <filter id="glow">
+                            <feGaussianBlur stdDeviation="3" result="coloredBlur" />
+                            <feMerge>
+                                <feMergeNode in="coloredBlur" />
+                                <feMergeNode in="SourceGraphic" />
+                            </feMerge>
+                        </filter>
                     </defs>
+
                     <rect width="100%" height="100%" fill="url(#grid)" />
 
-                    {connections.map((conn) => {
-                        const fromNode = nodes.find(n => n.id === conn.from);
-                        const toNode = nodes.find(n => n.id === conn.to);
-                        const color = getLineColor(conn.from, conn.to);
-                        const isActive = isLineActive(conn.from, conn.to);
+                    {/* Рендерим провода */}
+                    {wires.map(renderWire)}
 
-                        if (!fromNode || !toNode) return null;
+                    {/* Preview line */}
+                    {renderPreviewLine()}
 
-                        return (
-                            <g key={conn.id}>
-                                <line
-                                    x1={fromNode.x}
-                                    y1={fromNode.y}
-                                    x2={toNode.x}
-                                    y2={toNode.y}
-                                    stroke={color}
-                                    strokeWidth="3"
-                                />
-                                {/* Эффект свечения для активных линий */}
-                                {isActive && (
-                                    <line
-                                        x1={fromNode.x}
-                                        y1={fromNode.y}
-                                        x2={toNode.x}
-                                        y2={toNode.y}
-                                        stroke={color}
-                                        strokeWidth="1"
-                                        opacity="0.5"
-                                        style={{ filter: 'blur(3px)' }}
-                                    />
-                                )}
-                            </g>
-                        );
-                    })}
-
-                    {drawingConnection && (
-                        <>
-                            <line
-                                x1={nodes.find(n => n.id === drawingConnection.from)?.x}
-                                y1={nodes.find(n => n.id === drawingConnection.from)?.y}
-                                x2={drawingConnection.currentX}
-                                y2={drawingConnection.currentY}
-                                stroke="#ffff00"
-                                strokeWidth="3"
-                                strokeDasharray="5,5"
-                            />
-                            <circle
-                                cx={drawingConnection.currentX}
-                                cy={drawingConnection.currentY}
-                                r="8"
-                                fill="#ffff00"
-                                opacity="0.5"
-                            />
-                        </>
-                    )}
-
+                    {/* Рендерим узлы */}
                     {nodes.map(node => {
+                        const isHovered = hoveredElement?.type === 'node' && hoveredElement.id === node.id;
                         const nodeColor = getNodeColor(node.id);
-                        const isDragging = draggingNode === node.id;
+                        const isActive = node.enabled && nodeColor !== '#808080' && nodeColor !== '#ff0000';
 
                         return (
                             <g key={node.id}>
+                                {/* Свечение для активных узлов */}
+                                {isActive && (
+                                    <circle
+                                        cx={node.x}
+                                        cy={node.y}
+                                        r={node.type === 'power' ? 30 : 20}
+                                        fill={nodeColor}
+                                        opacity={0.3}
+                                        filter="url(#glow)"
+                                    />
+                                )}
+
                                 {node.type === 'power' ? (
                                     <polygon
                                         points={`
-                      ${node.x - 20},${node.y - 15}
-                      ${node.x + 20},${node.y - 15}
-                      ${node.x + 25},${node.y}
-                      ${node.x + 20},${node.y + 15}
-                      ${node.x - 20},${node.y + 15}
-                      ${node.x - 25},${node.y}
-                    `}
+                                            ${node.x - 20},${node.y - 15}
+                                            ${node.x + 20},${node.y - 15}
+                                            ${node.x + 25},${node.y}
+                                            ${node.x + 20},${node.y + 15}
+                                            ${node.x - 20},${node.y + 15}
+                                            ${node.x - 25},${node.y}
+                                        `}
                                         fill={nodeColor}
-                                        stroke={isDragging ? "white" : "#333"}
-                                        strokeWidth={isDragging ? "3" : "2"}
-                                        cursor="move"
+                                        stroke={isHovered ? "yellow" : "#333"}
+                                        strokeWidth={isHovered ? "3" : "2"}
+                                        cursor="pointer"
                                         onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                                        onClick={() => toggleNode(node.id)}
                                     />
                                 ) : (
                                     <circle
                                         cx={node.x}
                                         cy={node.y}
-                                        r="15"
+                                        r={isHovered ? 18 : 15}
                                         fill={nodeColor}
-                                        stroke={isDragging ? "white" : "#333"}
-                                        strokeWidth={isDragging ? "3" : "2"}
-                                        cursor="move"
+                                        stroke={isHovered ? "yellow" : "#333"}
+                                        strokeWidth={isHovered ? "3" : "2"}
+                                        cursor="pointer"
                                         onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                                        onClick={() => toggleNode(node.id)}
                                     />
                                 )}
 
                                 <text
                                     x={node.x}
-                                    y={node.y + (node.type === 'power' ? 40 : 30)}
+                                    y={node.y + (node.type === 'power' ? 35 : 35)}
                                     textAnchor="middle"
                                     fill="white"
                                     fontSize="12"
                                     fontWeight="bold"
-                                    style={{ textShadow: '0 0 3px black' }}
+                                    style={{ userSelect: 'none' }}
                                 >
                                     {node.id}
                                 </text>
+
+                                {!node.enabled && (
+                                    <text
+                                        x={node.x}
+                                        y={node.y}
+                                        textAnchor="middle"
+                                        fill="white"
+                                        fontSize="16"
+                                        fontWeight="bold"
+                                        style={{ userSelect: 'none' }}
+                                    >
+                                        ✕
+                                    </text>
+                                )}
                             </g>
                         );
                     })}
@@ -726,17 +796,19 @@ const App = () => {
                 <div style={{
                     position: 'absolute',
                     top: '10px',
-                    left: '10px',
-                    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                    right: '10px',
+                    backgroundColor: 'rgba(0, 0, 0, 0.8)',
                     color: 'white',
                     padding: '10px',
                     borderRadius: '4px',
                     fontSize: '12px'
                 }}>
-                    {mode === 'add-connection' && 'Кликните на два узла для соединения'}
-                    {mode === 'add-power' && 'Кликните на холст для добавления источника'}
-                    {mode === 'add-bus' && 'Кликните на холст для добавления шины'}
-                    {mode === 'select' && 'Кликните на элемент для переключения, перетащите для перемещения'}
+                    <div><strong>Статистика:</strong></div>
+                    <div>Источники: {nodes.filter(n => n.type === 'power').length}
+                        ({nodes.filter(n => n.type === 'power' && n.enabled).length} вкл)</div>
+                    <div>Шины: {nodes.filter(n => n.type === 'bus').length}
+                        ({nodes.filter(n => n.type === 'bus' && n.enabled).length} вкл)</div>
+                    <div>Провода: {wires.length}</div>
                 </div>
             </div>
 
@@ -747,24 +819,28 @@ const App = () => {
                 backgroundColor: '#2a2a2a',
                 borderRadius: '8px'
             }}>
-                <h3>📖 Логика цветов линий:</h3>
+                <h3>📖 Инструкции:</h3>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
                     <div>
-                        <h4>🎨 Цвета:</h4>
-                        <p>• <strong>Выключенный источник</strong> → серый</p>
-                        <p>• <strong>Включенный источник</strong> → его цвет</p>
-                        <p>• <strong>Выключенная шина</strong> → красная</p>
-                        <p>• <strong>Включенная шина</strong> → цвет активного источника</p>
-                        <p>• <strong>Активная линия</strong> → цвет источника</p>
-                        <p>• <strong>Неактивная линия</strong> → серая</p>
+                        <h4>🎨 Цветовая схема:</h4>
+                        <ul style={{ margin: 0, paddingLeft: '20px' }}>
+                            <li>Каждый источник имеет уникальный цвет</li>
+                            <li>Активные провода показывают цвет источника</li>
+                            <li>Серый = нет питания</li>
+                            <li>Красный = конфликт источников</li>
+                            <li>Свечение = активное питание</li>
+                        </ul>
                     </div>
                     <div>
-                        <h4>🔗 Логика линий:</h4>
-                        <p>• <strong>Линия между двумя активными шинами одного источника</strong> → цвет источника</p>
-                        <p>• <strong>Линия между активной и неактивной шиной</strong> → цвет активной шины</p>
-                        <p>• <strong>Линия между двумя разными источниками</strong> → серая (конфликт)</p>
-                        <p>• <strong>Линия между выключенными элементами</strong> → серая</p>
-                        <p>• <strong>Конфликт источников</strong> → шина автоматически выключается</p>
+                        <h4>⚡ Управление:</h4>
+                        <ul style={{ margin: 0, paddingLeft: '20px' }}>
+                            <li>Клик на узел = вкл/выкл</li>
+                            <li>Перетащите узел для перемещения</li>
+                            <li>Перетащите точку изгиба для изменения формы</li>
+                            <li>Двойной клик = завершить провод</li>
+                            <li>ESC = отмена действия</li>
+                            <li>Привязка к сетке 10×10 пикселей</li>
+                        </ul>
                     </div>
                 </div>
             </div>

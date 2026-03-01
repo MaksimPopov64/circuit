@@ -2,9 +2,23 @@ const { app, BrowserWindow, Menu } = require('electron');
 const path = require('path');
 
 // Проверяем, находится ли приложение в режиме разработки
-const isDev = process.env.NODE_ENV === 'development';
+// true = npm start, false = npm run build && electron .
+const isDev = !app.isPackaged;
 
 let mainWindow;
+
+function getPreloadPath() {
+    // Preload может находиться в public/ (dev) или build/ (production)
+    const preloadInBuild = path.join(__dirname, 'build', 'preload.js');
+    const preloadInPublic = path.join(__dirname, 'public', 'preload.js');
+    
+    // В production используем файл в build/
+    if (!isDev) {
+        return preloadInBuild;
+    }
+    // В development используем файл в public/
+    return preloadInPublic;
+}
 
 function createWindow() {
     mainWindow = new BrowserWindow({
@@ -16,7 +30,7 @@ function createWindow() {
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
-            preload: path.join(__dirname, 'preload.js')
+            preload: getPreloadPath()
         }
     });
 
@@ -25,26 +39,36 @@ function createWindow() {
         // В режиме разработки - подключаемся к localhost
         mainWindow.loadURL('http://localhost:3000')
             .then(() => {
-                console.log('Приложение загружено с localhost:3000');
+                console.log('[DEV] Приложение загружено с localhost:3000');
                 mainWindow.show();
+                // Открываем DevTools только в режиме разработки
                 mainWindow.webContents.openDevTools();
             })
             .catch(err => {
-                console.error('Не удалось загрузить приложение:', err);
+                console.error('[DEV] Не удалось загрузить приложение:', err);
                 // Если React сервер не запущен, показываем сообщение
-                mainWindow.loadFile(path.join(__dirname, 'public/no-server.html'));
+                const fallbackPath = path.join(__dirname, 'public', 'no-server.html');
+                mainWindow.loadFile(fallbackPath)
+                    .catch(fallbackErr => {
+                        console.error('Не удалось загрузить fallback:', fallbackErr);
+                    });
                 mainWindow.show();
             });
     } else {
         // В продакшене - загружаем собранные файлы
-        mainWindow.loadFile(path.join(__dirname, 'build/index.html'))
+        const buildPath = path.join(__dirname, 'build', 'index.html');
+        mainWindow.loadFile(buildPath)
             .then(() => {
-                console.log('Приложение загружено из build/');
+                console.log('[PROD] Приложение загружено из build/');
                 mainWindow.show();
             })
             .catch(err => {
-                console.error('Не удалось загрузить приложение:', err);
-                mainWindow.loadFile(path.join(__dirname, 'public/no-build.html'));
+                console.error('[PROD] Не удалось загрузить приложение:', err);
+                const fallbackPath = path.join(__dirname, 'public', 'no-build.html');
+                mainWindow.loadFile(fallbackPath)
+                    .catch(fallbackErr => {
+                        console.error('Не удалось загрузить fallback:', fallbackErr);
+                    });
                 mainWindow.show();
             });
     }
@@ -197,7 +221,7 @@ function createWindow() {
 
 // Когда приложение готово
 app.whenReady().then(() => {
-    console.log('Electron приложение готово');
+    console.log('[MAIN] Electron приложение готово. isDev:', isDev);
     createWindow();
 
     app.on('activate', () => {
@@ -205,6 +229,9 @@ app.whenReady().then(() => {
             createWindow();
         }
     });
+}).catch(err => {
+    console.error('[MAIN] Ошибка при инициализации:', err);
+    app.quit();
 });
 
 // Закрываем приложение, когда все окна закрыты (кроме macOS)
@@ -212,4 +239,9 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
         app.quit();
     }
+});
+
+// Обработка ошибок
+process.on('uncaughtException', (error) => {
+    console.error('[MAIN] Необработанное исключение:', error);
 });
