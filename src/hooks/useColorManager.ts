@@ -1,10 +1,18 @@
 // src/hooks/useColorManager.ts
-import { useCallback } from 'react';
-import { Node, Wire, WirePoint } from '../types';
-import { Circuit } from './useConnectionGraph';
-import { POWER_COLORS, COLOR_NO_POWER, COLOR_DISABLED_POWER } from '../constants';
+import { useCallback, useMemo } from 'react';
+import { Node, Wire, WirePoint, Circuit } from '../types';
+import { simulateCircuit, COLOR_NEUTRAL } from '../utils/simulation';
+import { POWER_COLORS, COLOR_DISABLED_POWER } from '../constants';
 
-export const useColorManager = (nodes: Node[], circuits: Circuit[]) => {
+export const useColorManager = (nodes: Node[], circuits: Circuit[], wires?: Wire[]) => {
+  // Get simulation results for direct wire/bus color lookup
+  const simulation = useMemo(() => {
+    if (wires) {
+      return simulateCircuit(nodes, wires);
+    }
+    return { wireColors: new Map(), busColors: new Map(), contactColors: new Map() };
+  }, [nodes, wires]);
+
   const getNextPowerColor = useCallback(() => {
     const powerCount = nodes.filter(n => n.type === 'power').length;
     return POWER_COLORS[powerCount % POWER_COLORS.length];
@@ -15,7 +23,7 @@ export const useColorManager = (nodes: Node[], circuits: Circuit[]) => {
    */
   const getNodeColor = useCallback((nodeId: string): string => {
     const node = nodes.find(n => n.id === nodeId);
-    if (!node) return '#808080';
+    if (!node) return COLOR_NEUTRAL;
 
     // Power source color
     if (node.type === 'power') {
@@ -25,47 +33,55 @@ export const useColorManager = (nodes: Node[], circuits: Circuit[]) => {
       return node.color || '#00FF00';
     }
 
-    // Bus color - find which circuit it belongs to
-    for (const circuit of circuits) {
-      if (circuit.busIds.has(nodeId)) {
-        return circuit.color;
-      }
-    }
+    // Bus color - prefer simulation results when available
+    if (node.type === 'bus') {
+      if (!node.enabled) return COLOR_DISABLED_POWER;
+      const simBusColor = simulation.busColors.get(nodeId) || simulation.contactColors.get(nodeId);
+      if (simBusColor) return simBusColor;
 
-    return COLOR_NO_POWER; // Not in any circuit
-  }, [nodes, circuits]);
-
-  /**
-   * Get the color for a wire segment
-   */
-  const getSegmentColor = useCallback((startPoint: WirePoint, endPoint: WirePoint, wires: Wire[]): string => {
-    // Find which wire(s) contain these points
-    const wireIds = new Set<string>();
-
-    wires.forEach(wire => {
-      Object.entries(wire.points).forEach(([pointId, point]) => {
-        if ((point.x === startPoint.x && point.y === startPoint.y) ||
-            (point.x === endPoint.x && point.y === endPoint.y)) {
-          wireIds.add(wire.id);
-        }
-      });
-    });
-
-    // Get circuit color from any wire in this segment
-    for (const wireId of wireIds) {
+      // Fallback to circuit membership
       for (const circuit of circuits) {
-        if (circuit.wireIds.has(wireId)) {
+        if (circuit.busIds.has(nodeId)) {
           return circuit.color;
         }
       }
+      return COLOR_NEUTRAL;
     }
 
-    return COLOR_NO_POWER;
-  }, [circuits]);
+    return COLOR_NEUTRAL; // Not in any circuit
+  }, [nodes, circuits]);
+
+  /**
+   * Get the color for a wire segment using simulation results
+   */
+  const getSegmentColor = useCallback((startPoint: WirePoint, endPoint: WirePoint, allWires: Wire[]): string => {
+    // Find which wire contains both points
+    for (const wire of allWires) {
+      const pointsArray = Object.values(wire.points);
+      const hasStart = pointsArray.some(p => p.x === startPoint.x && p.y === startPoint.y);
+      const hasEnd = pointsArray.some(p => p.x === endPoint.x && p.y === endPoint.y);
+      
+      if (hasStart && hasEnd) {
+        // Use simulation result if available, otherwise fall back to circuit lookup
+        const simColor = simulation.wireColors.get(wire.id);
+        if (simColor) return simColor;
+        
+        // Fallback to circuit-based lookup
+        for (const circuit of circuits) {
+          if (circuit.wireIds.has(wire.id)) {
+            return circuit.color;
+          }
+        }
+      }
+    }
+
+    return COLOR_NEUTRAL;
+  }, [circuits, simulation.wireColors]);
 
   return {
     getNextPowerColor,
     getNodeColor,
-    getSegmentColor
+    getSegmentColor,
+    simulation
   };
 };

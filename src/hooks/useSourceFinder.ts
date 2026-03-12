@@ -1,47 +1,44 @@
 // src/hooks/useSourceFinder.ts
 import { useMemo } from 'react';
-import { Node } from '../types';
-import { Circuit } from './useConnectionGraph';
+import { Node, Wire } from '../types';
+import { simulateCircuit, COLOR_NEUTRAL } from '../utils/simulation';
 
 /**
- * Determine the color for a component based on which circuit it belongs to
+ * Determine the color for a component based on simulation results
  */
 export const useComponentColor = (
   nodeId: string,
   nodes: Node[],
-  circuits: Circuit[]
+  wires: Wire[]
 ): string => {
   return useMemo(() => {
     const node = nodes.find(n => n.id === nodeId);
-    if (!node) return '#808080';
+    if (!node) return COLOR_NEUTRAL;
 
-    // Check which circuit this node belongs to
-    for (const circuit of circuits) {
-      if (circuit.sourceIds.has(nodeId) || circuit.busIds.has(nodeId)) {
-        return circuit.color;
-      }
+    // Power sources have their own color
+    if (node.type === 'power') {
+      if (!node.enabled) return COLOR_NEUTRAL;
+      return node.color || COLOR_NEUTRAL;
     }
 
-    // If not in any circuit, return gray (no power)
-    return '#808080';
-  }, [nodeId, nodes, circuits]);
+    // Use simulation for bus colors
+    const { busColors } = simulateCircuit(nodes, wires);
+    return busColors.get(nodeId) || COLOR_NEUTRAL;
+  }, [nodeId, nodes, wires]);
 };
 
 /**
- * Determine the color for a wire based on which circuit it belongs to
+ * Determine the color for a wire based on simulation results
  */
 export const useWireColor = (
   wireId: string,
-  circuits: Circuit[]
+  nodes: Node[],
+  wires: Wire[]
 ): string => {
   return useMemo(() => {
-    for (const circuit of circuits) {
-      if (circuit.wireIds.has(wireId)) {
-        return circuit.color;
-      }
-    }
-    return '#808080';
-  }, [wireId, circuits]);
+    const { wireColors } = simulateCircuit(nodes, wires);
+    return wireColors.get(wireId) || COLOR_NEUTRAL;
+  }, [wireId, nodes, wires]);
 };
 
 /**
@@ -49,17 +46,26 @@ export const useWireColor = (
  */
 export const useNodeSources = (
   nodeId: string,
-  circuits: Circuit[]
+  nodes: Node[],
+  wires: Wire[]
 ): Set<string> => {
   return useMemo(() => {
     const sources = new Set<string>();
+    const { contactColors } = simulateCircuit(nodes, wires);
     
-    for (const circuit of circuits) {
-      if (circuit.sourceIds.has(nodeId) || circuit.busIds.has(nodeId)) {
-        circuit.sourceIds.forEach(sourceId => sources.add(sourceId));
-      }
-    }
-    
+    // Find which color this contact has
+    const contactColor = contactColors.get(nodeId);
+    if (!contactColor) return sources;
+
+    // Find all enabled sources with the same color
+    nodes
+      .filter(n => n.type === 'power' && n.enabled)
+      .forEach(source => {
+        if (source.color === contactColor) {
+          sources.add(source.id);
+        }
+      });
+
     return sources;
-  }, [nodeId, circuits]);
+  }, [nodeId, nodes, wires]);
 };

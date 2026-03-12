@@ -1,7 +1,6 @@
 // src/hooks/useConflictDetection.ts
 import { useEffect, useMemo } from 'react';
-import { Node } from '../types';
-import { Circuit } from './useConnectionGraph';
+import { Node, Circuit } from '../types';
 
 export const useConflictDetection = (
   nodes: Node[],

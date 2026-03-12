@@ -1,7 +1,7 @@
 // src/types.ts
 export interface Node {
   id: string;
-  type: 'power' | 'bus';
+  type: 'power' | 'bus' | 'juncion' | 'contact';
   x: number;
   y: number;
   enabled: boolean;
@@ -51,4 +51,14 @@ export interface FindWirePointResult {
   wire: Wire;
   point: WirePoint;
   pointId: string;
+}
+
+export interface Circuit {
+  id: string;
+  sourceIds: Set<string>;
+  busIds: Set<string>;
+  wireIds: Set<string>;
+  color: string;
+  hasConflict: boolean;
+  contactIds: Set<string>;
 }

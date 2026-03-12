@@ -8,6 +8,7 @@ import {
   usePositionFinder,
   useConflictDetection
 } from './hooks';
+import { simulateCircuit } from './utils/simulation';
 import { getSVGCoordinates } from './utils';
 import { calculateDistance } from './utils/grid';
 import {
@@ -52,7 +53,7 @@ const App = () => {
     const { generateNodeId, generateWireId, generatePointId, resetCounters } = useIdGenerator();
     const connectionGraph = useConnectionGraph(nodes, wires);
     const circuits = useCircuitTracer(nodes, wires, connectionGraph);
-    const { getNextPowerColor, getNodeColor, getSegmentColor } = useColorManager(nodes, circuits);
+    const { getNextPowerColor, getNodeColor, getSegmentColor, simulation } = useColorManager(nodes, circuits, wires);
     const { findNodeAtPosition, findWirePointAtPosition } = usePositionFinder(nodes, wires);
 
     // Conflict detection with auto-update
@@ -60,11 +61,19 @@ const App = () => {
         nodes,
         circuits,
         useCallback((conflicts) => {
-            if (conflicts.size > 0) {
-                setNodes(prev => prev.map(node =>
-                    conflicts.has(node.id) ? { ...node, enabled: false } : node
-                ));
-            }
+            if (conflicts.size === 0) return;
+
+            setNodes(prev => {
+                let changed = false;
+                const next = prev.map(node => {
+                    if (conflicts.has(node.id) && node.enabled) {
+                        changed = true;
+                        return { ...node, enabled: false };
+                    }
+                    return node;
+                });
+                return changed ? next : prev;
+            });
         }, [])
     );
 
@@ -412,6 +421,35 @@ const App = () => {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [activeWire, editingPoint, draggingNode]);
 
+    // Auto-disable power sources that are energized by a higher-priority source
+    useEffect(() => {
+        if (!simulation || !simulation.contactColors) return;
+
+        const toDisable = new Set<string>();
+        nodes.forEach(node => {
+            if (node.type === 'power' && node.enabled) {
+                const color = simulation.contactColors.get(node.id);
+                if (color && node.color && color !== node.color) {
+                    toDisable.add(node.id);
+                }
+            }
+        });
+
+        if (toDisable.size === 0) return;
+
+        setNodes(prev => {
+            let changed = false;
+            const next = prev.map(n => {
+                if (toDisable.has(n.id) && n.enabled) {
+                    changed = true;
+                    return { ...n, enabled: false };
+                }
+                return n;
+            });
+            return changed ? next : prev;
+        });
+    }, [simulation, nodes]);
+
     const handleModeChange = (newMode: Mode) => {
         if (activeWire && newMode !== 'draw-wire') {
             setWires(prev => prev.map(w =>
@@ -510,13 +548,16 @@ const App = () => {
                     />
                 );
             } else if (point.type === 'junction') {
+                // contact id for junctions uses the same naming as buildCircuitGraph
+                const contactId = point.connectedTo || `junction_${point.x}_${point.y}`;
+                const junctionColor = simulation && simulation.contactColors ? (simulation.contactColors.get(contactId) || COLOR_JUNCTION_POINT) : COLOR_JUNCTION_POINT;
                 elements.push(
                     <circle
                         key={`point-${point.id}`}
                         cx={point.x}
                         cy={point.y}
                         r="6"
-                        fill={COLOR_JUNCTION_POINT}
+                        fill={junctionColor}
                         stroke="#333"
                         strokeWidth="2"
                         onMouseDown={(e) => handlePointMouseDown(e, wire.id, point.id)}
@@ -599,6 +640,90 @@ const App = () => {
                         }}
                     >
                         ✨ Выбор
+                    </button>
+                    <button
+                        onClick={() => {
+                            // Load example scenario: two sources -> disabled bus -> output bus
+                            const p1 = generateNodeId('power');
+                            const p2 = generateNodeId('power');
+                            const b1 = generateNodeId('bus');
+                            const b2 = generateNodeId('bus');
+
+                            const nodeList = [
+                                { id: p1, type: 'power' as const, x: 50, y: 100, enabled: true, color: POWER_COLORS[0] },
+                                { id: p2, type: 'power' as const, x: 50, y: 200, enabled: true, color: POWER_COLORS[1] },
+                                { id: b1, type: 'bus' as const, x: 200, y: 150, enabled: false },
+                                { id: b2, type: 'bus' as const, x: 350, y: 150, enabled: true }
+                            ];
+
+                            const w1p1 = generatePointId();
+                            const w1p2 = generatePointId();
+                            const w2p1 = generatePointId();
+                            const w2p2 = generatePointId();
+                            const w3p1 = generatePointId();
+                            const w3p2 = generatePointId();
+
+                            const w1 = {
+                                id: generateWireId(),
+                                points: {
+                                    [w1p1]: { id: w1p1, x: 50, y: 100, type: 'end' as const, connectedTo: p1, outgoing: [w1p2] },
+                                    [w1p2]: { id: w1p2, x: 200, y: 150, type: 'end' as const, connectedTo: b1, outgoing: [] }
+                                },
+                                rootPointId: w1p1,
+                                isComplete: true
+                            };
+
+                            const w2 = {
+                                id: generateWireId(),
+                                points: {
+                                    [w2p1]: { id: w2p1, x: 50, y: 200, type: 'end' as const, connectedTo: p2, outgoing: [w2p2] },
+                                    [w2p2]: { id: w2p2, x: 200, y: 150, type: 'end' as const, connectedTo: b1, outgoing: [] }
+                                },
+                                rootPointId: w2p1,
+                                isComplete: true
+                            };
+
+                            const w3 = {
+                                id: generateWireId(),
+                                points: {
+                                    [w3p1]: { id: w3p1, x: 200, y: 150, type: 'end' as const, connectedTo: b1, outgoing: [w3p2] },
+                                    [w3p2]: { id: w3p2, x: 350, y: 150, type: 'end' as const, connectedTo: b2, outgoing: [] }
+                                },
+                                rootPointId: w3p1,
+                                isComplete: true
+                            };
+
+                            setNodes(nodeList);
+                            setWires([w1, w2, w3]);
+
+                            // Run simulation and assert expected behavior
+                            const result = simulateCircuit(nodeList, [w1, w2, w3]);
+                            console.log('Example scenario simulation:', result);
+
+                            // Expectation: w1 and w2 energized with their respective source colors; w3 (after disabled bus b1) should be neutral
+                            const w1Color = result.wireColors.get(w1.id) || '#808080';
+                            const w2Color = result.wireColors.get(w2.id) || '#808080';
+                            const w3Color = result.wireColors.get(w3.id) || '#808080';
+
+                            const ok = w1Color === nodeList[0].color && w2Color === nodeList[1].color && w3Color === '#808080';
+                            console.log(`w1:${w1.id}=${w1Color}, w2:${w2.id}=${w2Color}, w3:${w3.id}=${w3Color}`);
+                            if (ok) {
+                                console.log('Example check: PASS — bus disabled blocks downstream wires');
+                            } else {
+                                console.warn('Example check: FAIL — unexpected coloring');
+                                alert('Example check FAILED — see console for details');
+                            }
+                        }}
+                        style={{
+                            padding: '10px 15px',
+                            backgroundColor: '#2196F3',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        📘 Load example
                     </button>
                     <button
                         onClick={() => handleModeChange('add-power')}

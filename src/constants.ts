@@ -25,6 +25,7 @@ export const POWER_COLORS = [
   '#FF8800', '#8800FF', '#008800', '#0088FF', '#FF00AA'
 ];
 
+export const COLOR_NEUTRAL = '#808080';
 export const COLOR_DISABLED_POWER = '#808080';
 export const COLOR_DISABLED_BUS = '#ff0000';
 export const COLOR_NO_POWER = '#808080';
