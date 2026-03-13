@@ -120,6 +120,16 @@ body {
   background: #000000;
 }
 
+/* Animated flowing current on energized wires */
+.wire-seg.energized {
+  stroke-dasharray: 8 8;
+  animation: dash-offset 1s linear infinite;
+}
+
+@keyframes dash-offset {
+  to { stroke-dashoffset: -16; }
+}
+
 /* Адаптивность */
 @media (max-width: 1024px) {
   .app-content {

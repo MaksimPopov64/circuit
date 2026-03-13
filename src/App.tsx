@@ -26,6 +26,7 @@ import {
   SVG_HEIGHT,
   COLOR_BACKGROUND
 } from './constants';
+import { COLOR_NEUTRAL, COLOR_CONFLICT } from './constants';
 
 const App = () => {
     // State management
@@ -506,6 +507,7 @@ const App = () => {
                         stroke={segmentColor}
                         strokeWidth={isHovered ? WIRE_STROKE_WIDTH_HOVER : WIRE_STROKE_WIDTH}
                         strokeLinecap="round"
+                        className={segmentColor !== COLOR_NEUTRAL && segmentColor !== COLOR_CONFLICT ? 'wire-seg energized' : 'wire-seg'}
                     />
                 );
 

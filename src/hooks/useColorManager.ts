@@ -62,10 +62,16 @@ export const useColorManager = (nodes: Node[], circuits: Circuit[], wires?: Wire
       const hasEnd = pointsArray.some(p => p.x === endPoint.x && p.y === endPoint.y);
       
       if (hasStart && hasEnd) {
+        // Only apply a color if the wire is actually connected to something
+        const isConnected = pointsArray.some(p => !!(p as any).connectedTo || nodes.some(n => n.x === p.x && n.y === p.y));
+        if (!isConnected) {
+          return COLOR_NEUTRAL;
+        }
+
         // Use simulation result if available, otherwise fall back to circuit lookup
         const simColor = simulation.wireColors.get(wire.id);
         if (simColor) return simColor;
-        
+
         // Fallback to circuit-based lookup
         for (const circuit of circuits) {
           if (circuit.wireIds.has(wire.id)) {
@@ -76,7 +82,7 @@ export const useColorManager = (nodes: Node[], circuits: Circuit[], wires?: Wire
     }
 
     return COLOR_NEUTRAL;
-  }, [circuits, simulation.wireColors]);
+  }, [circuits, simulation.wireColors, nodes]);
 
   return {
     getNextPowerColor,

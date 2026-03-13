@@ -138,7 +138,7 @@ export function buildCircuitGraph(nodes: Node[], wires: Wire[]): CircuitGraph {
     return Math.hypot(point.x - projX, point.y - projY);
   };
 
-  const SPATIAL_THRESHOLD = 2; // pixels
+  const SPATIAL_THRESHOLD = 2; // pi xels
 
   wires.forEach(wire => {
     Object.values(wire.points).forEach(point => {
@@ -469,6 +469,24 @@ export function computeColors(
   const conflictedBuses = new Set<string>();
   for (const [busId, srcs] of busReach.entries()) {
     if (srcs.size > 1) conflictedBuses.add(busId);
+  }
+
+  // Post-process: remove any wire colors that were set but have no actual source reachability.
+  // This ensures wires that lead only to disabled buses (and are not reached by any source)
+  // remain neutral (not colored).
+  for (const wId of Array.from(wireColors.keys())) {
+    const reach = wireReach.get(wId);
+    if (!reach || reach.size === 0) {
+      wireColors.delete(wId);
+    }
+  }
+
+  // Similarly ensure busColors only exist for buses reached by at least one source
+  for (const bId of Array.from(busColors.keys())) {
+    const reach = busReach.get(bId);
+    if (!reach || reach.size === 0) {
+      busColors.delete(bId);
+    }
   }
 
   return {
