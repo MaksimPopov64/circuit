@@ -77,7 +77,7 @@ export const useCircuitTracer = (nodes: Node[], wires: Wire[], connectionGraph: 
   return useMemo(() => {
     // Use the pure simulation to compute colors and derive circuits
     const graph = buildCircuitGraph(nodes, wires);
-    const { wireColors, busColors, contactColors, conflictedBuses, busReach } = computeColors(nodes, wires, graph) as any;
+    const { wireColors, busColors, contactColors, conflictedBuses, busReach } = computeColors(nodes, graph) as any;
 
     // Map colors to source IDs (priority order ensures unique mapping)
     const enabledSources = nodes
@@ -139,14 +139,16 @@ export const useCircuitTracer = (nodes: Node[], wires: Wire[], connectionGraph: 
     }
 
     return circuits;
-  }, [nodes, wires, connectionGraph]);
+    // Note: connectionGraph is intentionally excluded - we build our own graph internally
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes, wires]);
 };
 
 // Alternative implementation using the color computation results directly
 export const useCircuitTracerV2 = (nodes: Node[], wires: Wire[]) => {
   return useMemo(() => {
     const graph = buildCircuitGraph(nodes, wires);
-    const { wireColors, busColors, contactColors } = computeColors(nodes, wires, graph);
+    const { wireColors, busColors, contactColors } = computeColors(nodes, graph);
     
     // Group components by their assigned color
     const colorGroups = new Map<string, {

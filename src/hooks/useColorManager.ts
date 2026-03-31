@@ -49,40 +49,38 @@ export const useColorManager = (nodes: Node[], circuits: Circuit[], wires?: Wire
     }
 
     return COLOR_NEUTRAL; // Not in any circuit
-  }, [nodes, circuits]);
+  }, [nodes, circuits, simulation.busColors, simulation.contactColors]);
 
   /**
-   * Get the color for a wire segment using simulation results
+   * Resolve a wire point to its canonical contact ID (same logic as buildCircuitGraph).
    */
-  const getSegmentColor = useCallback((startPoint: WirePoint, endPoint: WirePoint, allWires: Wire[]): string => {
-    // Find which wire contains both points
-    for (const wire of allWires) {
-      const pointsArray = Object.values(wire.points);
-      const hasStart = pointsArray.some(p => p.x === startPoint.x && p.y === startPoint.y);
-      const hasEnd = pointsArray.some(p => p.x === endPoint.x && p.y === endPoint.y);
-      
-      if (hasStart && hasEnd) {
-        // Only apply a color if the wire is actually connected to something
-        const isConnected = pointsArray.some(p => !!(p as any).connectedTo || nodes.some(n => n.x === p.x && n.y === p.y));
-        if (!isConnected) {
-          return COLOR_NEUTRAL;
-        }
+  const resolveContactId = useCallback((p: WirePoint): string => {
+    if (p.connectedTo) return p.connectedTo;
+    const nodeAtPos = nodes.find(n => n.x === p.x && n.y === p.y);
+    if (nodeAtPos) return nodeAtPos.id;
+    return `junction_${p.x}_${p.y}`;
+  }, [nodes]);
 
-        // Use simulation result if available, otherwise fall back to circuit lookup
-        const simColor = simulation.wireColors.get(wire.id);
-        if (simColor) return simColor;
+  /**
+   * Get the colour for a single wire segment using per-endpoint contact colours.
+   *
+   * A segment is energised (and coloured) only when BOTH its endpoints are reached
+   * by the same source.  This correctly turns off the segment that lies on the
+   * "output" side of a disabled bus even when the input side (and the bus contact
+   * itself) is coloured.
+   */
+  const getSegmentColor = useCallback((startPoint: WirePoint, endPoint: WirePoint, _allWires: Wire[]): string => {
+    const startId = resolveContactId(startPoint);
+    const endId   = resolveContactId(endPoint);
 
-        // Fallback to circuit-based lookup
-        for (const circuit of circuits) {
-          if (circuit.wireIds.has(wire.id)) {
-            return circuit.color;
-          }
-        }
-      }
-    }
+    const startColor = simulation.contactColors.get(startId);
+    const endColor   = simulation.contactColors.get(endId);
+
+    // Both endpoints energised by the same source → show that colour.
+    if (startColor && endColor && startColor === endColor) return startColor;
 
     return COLOR_NEUTRAL;
-  }, [circuits, simulation.wireColors, nodes]);
+  }, [resolveContactId, simulation.contactColors]);
 
   return {
     getNextPowerColor,

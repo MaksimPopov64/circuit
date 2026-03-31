@@ -1,7 +1,7 @@
 // src/types.ts
 export interface Node {
   id: string;
-  type: 'power' | 'bus' | 'juncion' | 'contact';
+  type: 'power' | 'bus' | 'junction' | 'contact';
   x: number;
   y: number;
   enabled: boolean;
